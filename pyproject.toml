@@ -1,0 +1,12 @@
+[project]
+name = "neuron-tis-hpc"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "lfpy>=2.3.6",
+    "neuron>=9.0.1",
+    "numpy>=2.3.5",
+    "pandas>=2.3.3",
+]

@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Database
+DB/*
+!DB/.gitkeep
+
+# Neuron mechanisms
+model/*
+!model/.gitkeep
+
+# Slurm output
+*.out
