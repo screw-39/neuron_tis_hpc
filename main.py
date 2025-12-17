@@ -33,7 +33,7 @@ def instantiate_cell(cellParameters):
             
     return cell
 
-#連續正弦波(從t=200開始)
+#連續正弦波
 def generate_sin_wave_pulses(
     width: float,
     t_start: float,
@@ -73,6 +73,10 @@ def generate_3d_r_matrix(theta, ro, roll):
     # 這裡是 Rz(ro) * Ry(theta) * Rx(roll) 的組合
     # 這種寫法保證了不管怎麼轉，三個軸永遠垂直
     # 預先計算三角函數
+    theta = float(theta.iloc[0])
+    ro    = float(ro.iloc[0])
+    roll  = float(roll.iloc[0])
+
     c_r, s_r = np.cos(ro), np.sin(ro)
     c_t, s_t = np.cos(theta), np.sin(theta)
     c_l, s_l = np.cos(roll), np.sin(roll)
@@ -97,8 +101,8 @@ def generate_electrodes_coord(R):
     [-R, 0, 0],  # P1 原始點
     [0, R, 0],   # P2 原始點
     [0, -R, 0],  # P3 原始點
-    [0, 0, R],   # P4 原始點
-    [0, 0, -R],  # P5 原始點
+    [0, 0, -R],  # P4 原始點
+    [0, 0, R],   # P5 原始點
     ])
     return p_init
 
@@ -174,15 +178,16 @@ def main(id):
     t_stop = cell.tstop
     dt = cell.dt
 
-    amp1 = 0.1905*1e5 # 振幅 (nA)
-    amp2 = 0.276*1e5
-    frequency = 1000
-    delta = 20
+    amp = testParameters['AMPLITUDE'].iloc[0] # 振幅 (nA)
+    frequency = testParameters['FREQUENCY'].iloc[0]
+    delta = testParameters['DELTA'].iloc[0]
     stim_elec_params = {
-        0:  {"amp": amp2, "freq": frequency + delta, "phase": np.pi }, #+x
-        1:  {"amp": amp2, "freq": frequency, "phase": np.pi },         #-x
-        2:  {"amp": amp2, "freq": frequency + delta, "phase": np.pi }, 
-        3:  {"amp": amp2, "freq": frequency, "phase": np.pi }, 
+        0:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, #+x
+        1:  {"amp": amp, "freq": frequency, "phase": np.pi },         #-x
+        2:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, 
+        3:  {"amp": amp, "freq": frequency, "phase": np.pi }, 
+        2:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, 
+        3:  {"amp": amp, "freq": frequency, "phase": np.pi }, 
     }
 
     # ---- 對每個 cell 套用外加刺激（每次皆使用「新的」probe，避免快取形狀衝突）----
@@ -223,7 +228,7 @@ def main(id):
     for v in cell.somav:
         second = safe_execute(
             c,
-            "INSERT INTO ELECTRODE_PARAMETER (TEST_ID,TIME,VOLTAGE) VALUES (?, ?, ?)",
+            "INSERT INTO TEST_VOLTAGE (TEST_ID,TIME,VOLTAGE) VALUES (?, ?, ?)",
             (id, t, v)
             )
         t += dt

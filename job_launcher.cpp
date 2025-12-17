@@ -146,7 +146,8 @@ int main(int argc, char *argv[]){
 
     // detect number of CPU cores available on this node
     int NCPU = (int) sysconf(_SC_NPROCESSORS_ONLN);
-    if (NCPU > 0) NCPU /= size; 
+    // if (NCPU > 0) NCPU /= size; 
+    if (NCPU > 0) NCPU = 30; 
     if (NCPU <= 0) NCPU = omp_get_num_procs() / size;
     if (NCPU <= 0) NCPU = 1;
 
