@@ -104,7 +104,7 @@ int launch_worker(int nt, int rank) {
         int eid = brecv[0];
         if (eid < 0) break;
 
-        snprintf(str, sizeof(str), "(uv run main.py %d)", eid);
+        snprintf(str, sizeof(str), "(uv run main.py %d %d)", tag, eid);
         system(str);
         fflush(stdout);
     }

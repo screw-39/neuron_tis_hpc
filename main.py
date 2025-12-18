@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import time
 import pandas as pd
 import numpy as np
@@ -10,10 +11,10 @@ import sqlite3
 
 neuron.h.load_file("stdrun.hoc")
 
-def load_test_parameter(id):
-    conn = sqlite3.connect('./DB/3D_SYMMETRY.db')
+def load_test_parameter(worker_id, job_id):
+    conn = sqlite3.connect(f'./DB/worker_{worker_id}.db')
     df = pd.read_sql_query(
-        f"SELECT * FROM TEST_PARAMETER WHERE TEST_ID = {id}",
+        f"SELECT * FROM TEST_PARAMETER WHERE TEST_ID = {job_id}",
         conn
     )
     conn.close()
@@ -119,7 +120,7 @@ def safe_execute(cursor, query, params=(), retries=10, wait=0.1):
     print("ERROR: database locked too long, giving up")
     return False
 
-def main(id):
+def main(worker_id, job_id):
     # ---------- Simulation parameters ----------
     cellParameters = {
         'morphology' : './model/ball_and_stick.hoc',
@@ -130,7 +131,10 @@ def main(id):
         'passive' : False,
     }
 
-    testParameters = load_test_parameter(id)
+    if not os.path.isfile(f'./DB/worker_{worker_id}.db'):
+        shutil.copyfile(f'./DB/3D_SYMMETRY.db', f'./DB/worker_{worker_id}.db')
+
+    testParameters = load_test_parameter(worker_id, job_id)
 
     # class RecExtElectrode parameters:
     # 1. 定義這三個角度 (由您的模擬環境提供)
@@ -207,7 +211,7 @@ def main(id):
         rec_vmem=True
     )
 
-    conn = sqlite3.connect('./DB/3D_SYMMETRY.db')
+    conn = sqlite3.connect(f'./DB/worker_{worker_id}.db')
     c = conn.cursor()
 
     # Enable WAL mode
@@ -238,4 +242,4 @@ def main(id):
     conn.close()
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]))
+    main(worker_id = int(sys.argv[1]), job_id = int(sys.argv[2]))
