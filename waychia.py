@@ -8,11 +8,11 @@ import neuron
 import LFPy
 import sqlite3
 
-
-neuron.h.load_file("stdrun.hoc")
+neuron.h.nrn_load_dll("model/mods/nrnmech.dll") # load NEURON mechanisms
+neuron.h.celsius = 6.3 # set temperature
 
 def load_test_parameter(worker_id, job_id):
-    conn = sqlite3.connect(f'./DB/worker_{worker_id}.db')
+    conn = sqlite3.connect(f'./DB/waychia_worker_{worker_id}.db')
     df = pd.read_sql_query(
         f"SELECT * FROM TEST_PARAMETER WHERE TEST_ID = {job_id}",
         conn
@@ -23,15 +23,6 @@ def load_test_parameter(worker_id, job_id):
 def instantiate_cell(cellParameters):
     cell = LFPy.Cell(**cellParameters, delete_sections=True)
     cell.set_pos(x=0, y=0, z=0)
-
-    # insert hh mechanism in everywhere, reduced density elsewhere
-    for sec in cell.allseclist:
-        sec.insert('hh')
-        if not 'soma' in sec.name():
-            # reduce density of Na- and K-channels to 5% in dendrites
-            sec.gnabar_hh = 0.006
-            sec.gkbar_hh = 0.0018
-            
     return cell
 
 #連續正弦波
@@ -102,8 +93,8 @@ def generate_electrodes_coord(R):
     [-R, 0, 0],  # P1 原始點
     [0, R, 0],   # P2 原始點
     [0, -R, 0],  # P3 原始點
-    [0, 0, -R],  # P4 原始點
-    [0, 0, R],   # P5 原始點
+    [0, 0, R],  # P4 原始點
+    [0, 0, -R],   # P5 原始點
     ])
     return p_init
 
@@ -124,16 +115,16 @@ def main(worker_id, job_id):
     # ---------- Simulation parameters ----------
     print(f'JOB ID: {job_id}')
     cellParameters = {
-        'morphology' : './model/ball_and_stick.hoc',
-        'tstart' : 0, # ignore startup transients
+        'morphology' : './model/wc_ball_and_stick.hoc',
+        'tstart' : -10, # ignore startup transients
         'tstop' : 20,
         'dt' : 2**-6,
-        'v_init' : -60, 
+        'v_init' : -65, 
         'passive' : False,
     }
 
-    if not os.path.isfile(f'./DB/worker_{worker_id}.db'):
-        shutil.copyfile(f'./DB/3D_SYMMETRY.db', f'./DB/worker_{worker_id}.db')
+    if not os.path.isfile(f'./DB/waychia_worker_{worker_id}.db'):
+        shutil.copyfile(f'./DB/WAYCHIA_SYMMETRY.db', f'./DB/waychia_worker_{worker_id}.db')
 
     testParameters = load_test_parameter(worker_id, job_id)
 
@@ -145,7 +136,7 @@ def main(worker_id, job_id):
     theta = np.deg2rad(testParameters['THETA']) 
     ro = np.deg2rad(testParameters['RO'])
     roll = np.deg2rad(testParameters['ROLL'])
-    R = 10
+    R = 100
 
     # 2. 定義旋轉矩陣
     R_matrix = generate_3d_r_matrix(theta, ro, roll)
@@ -179,20 +170,21 @@ def main(worker_id, job_id):
 
     # Set stimulation parameters for one electrode
     width1 = 1    # 脈衝寬度pluse width (ms)
-    t_start = 2   # (ms)
+    t_start = 10   # (ms)
     t_stop = cell.tstop
     dt = cell.dt
 
     amp = testParameters['AMPLITUDE'].iloc[0] # 振幅 (nA)
     frequency = testParameters['FREQUENCY'].iloc[0]
     delta = testParameters['DELTA'].iloc[0]
+    num = testParameters['ELECTRODE_NUM'].iloc[0]
     stim_elec_params = {
-        0:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, #+x
-        1:  {"amp": amp, "freq": frequency, "phase": np.pi },         #-x
-        2:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, 
-        3:  {"amp": amp, "freq": frequency, "phase": np.pi }, 
-        2:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, 
-        3:  {"amp": amp, "freq": frequency, "phase": np.pi }, 
+        0:  {"amp": amp if num >= 2 else 0, "freq": frequency + delta, "phase": np.pi }, #+x
+        1:  {"amp": amp if num >= 2 else 0, "freq": frequency, "phase": np.pi },         #-x
+        2:  {"amp": amp if num >= 4 else 0, "freq": frequency + delta, "phase": np.pi }, 
+        3:  {"amp": amp if num >= 4 else 0, "freq": frequency, "phase": np.pi }, 
+        2:  {"amp": amp if num == 6 else 0, "freq": frequency + delta, "phase": np.pi }, 
+        3:  {"amp": amp if num == 6 else 0, "freq": frequency, "phase": np.pi }, 
     }
 
     # ---- 對每個 cell 套用外加刺激（每次皆使用「新的」probe，避免快取形狀衝突）----
@@ -212,7 +204,7 @@ def main(worker_id, job_id):
         rec_vmem=True
     )
 
-    conn = sqlite3.connect(f'./DB/worker_{worker_id}.db')
+    conn = sqlite3.connect(f'./DB/waychia_worker_{worker_id}.db')
     c = conn.cursor()
 
     # Enable WAL mode

@@ -1,11 +1,12 @@
 import sqlite3
 
 #connect to database
-conn = sqlite3.connect('./DB/3D_SYMMETRY.db')
+conn = sqlite3.connect('./DB/WAYCHIA_SYMMETRY.db')
 
 #creat new table
 conn.execute('''CREATE TABLE TEST_PARAMETER(        
         TEST_ID         INT      NOT NULL,
+        ELECTRODE_NUM   INT      NOT NULL,
         THETA           REAL     NOT NULL,
         RO              REAL     NOT NULL,
         ROLL            REAL     NOT NULL,
