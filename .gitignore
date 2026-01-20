@@ -19,3 +19,6 @@ model/*
 
 # Slurm output
 *.out
+
+# Different tests
+tests/

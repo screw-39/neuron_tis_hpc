@@ -4,8 +4,8 @@
 #include <iostream>
 #include <fstream>
 #include <unistd.h>
+#include <set>
 using namespace std;
-
 #include <omp.h>
 #include <mpi.h>
 
@@ -24,39 +24,24 @@ void launch_provider(int n_worker, const int total_work) {
     char str[512];
     int next_eid = 0;
     int count = 0;
+    set<int> stopped_workers;
 
     while(1) {
-
-        double t0 = MPI_Wtime();   // Start timing Master receive
-
         ierr = MPI_Recv(buf, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-        double t1 = MPI_Wtime();   // Recv finished
-
         int to_source = status.MPI_SOURCE;
         int to_tag    = status.MPI_TAG;
 
-        // Print Master communication delay
-        double recv_us = (t1 - t0) * 1e6;
-        printf("[MASTER] Recv from rank %d tag %d : %.2f us\n",
-               to_source, to_tag, recv_us);
-
         if (next_eid >= total_work) {
-            count++;
+            if (!stopped_workers.count(to_tag)) {
+                stopped_workers.insert(to_tag);
+                count++;
+            }
             buf[0] = -1;
         } else {
             buf[0] = next_eid++;
         }
 
-        double t2 = MPI_Wtime();   // Start timing Master send
-
         ierr = MPI_Send(buf, 1, MPI_INT, to_source, to_tag, MPI_COMM_WORLD);
-
-        double t3 = MPI_Wtime();   // Send finished
-
-        double send_us = (t3 - t2) * 1e6;
-        printf("[MASTER] Send to rank %d tag %d : %.2f us\n",
-               to_source, to_tag, send_us);
 
         if (count >= n_worker) break;
     }
@@ -67,33 +52,17 @@ void launch_provider(int n_worker, const int total_work) {
 
 int launch_worker(int nt, int rank) {
     MPI_Status status;
-    int bsend[1] = {0};
+    int bsend[1] = {0}; // dummy request; payload unused
     int brecv[1];
-    int len, ierr, tag;
+    int len, ierr;
     char str[1024];
+    int worker_id = uniq_tag(nt, rank);
+    int tag = worker_id;
 
     while(1) {
-
-        tag = uniq_tag(nt, rank);
-
-        // Only thread 0 prints timing
-        double t0 = MPI_Wtime();   // Worker send → Master
-
         MPI_Send(bsend, 1, MPI_INT, ROOT_NODE, tag, MPI_COMM_WORLD);
 
-        double t1 = MPI_Wtime();
-
         ierr = MPI_Recv(brecv, 1, MPI_INT, ROOT_NODE, tag, MPI_COMM_WORLD, &status);
-
-        double t2 = MPI_Wtime();   // Worker receive finished
-
-        if (nt == 0) {
-            printf("[WORKER %d-%d] Send: %.2f us, Recv: %.2f us, RTT: %.2f us\n",
-                rank, nt,
-                (t1 - t0) * 1e6,
-                (t2 - t1) * 1e6,
-                (t2 - t0) * 1e6);
-        }
 
         if (ierr != MPI_SUCCESS) {
             MPI_Error_string(ierr, str, &len);
@@ -104,9 +73,12 @@ int launch_worker(int nt, int rank) {
         int eid = brecv[0];
         if (eid < 0) break;
 
-        snprintf(str, sizeof(str), "(uv run main.py %d %d)", tag, eid);
+        snprintf(
+            str, sizeof(str),
+            "(uv run main.py %d > worker_%d.log 2>&1)",
+            worker_id, worker_id
+        );
         system(str);
-        fflush(stdout);
     }
 
     printf("No jobs from master - worker %d-%d exit.\n", rank, nt);
@@ -116,24 +88,29 @@ int launch_worker(int nt, int rank) {
 
 int main(int argc, char *argv[]){
 
-    if (argc != 2) {
-        printf("Usage: %s TOTAL_WORK\n", argv[0]);
+    if (argc != 3) {
+        printf("Usage: %s TOTAL_WORK WORKERS_PER_RANK\n", argv[0]);
         return 1;
     }
 
     // parse total work (must be positive integer)
-    char *endptr = nullptr;
-    long total_work_l = strtol(argv[1], &endptr, 10);
-    if (endptr == argv[1] || total_work_l <= 0) {
-        fprintf(stderr, "Invalid TOTAL_WORK: %s\n", argv[1]);
+    int total_work = atoi(argv[1]);
+    int workers_per_rank = atoi(argv[2]);
+
+    if (total_work <= 0 || workers_per_rank <= 0) {
+        fprintf(stderr, "Invalid arguments\n");
         return 1;
     }
-    int total_work = (int) total_work_l;
- 
+    
     int rank, size, provided;
     MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (workers_per_rank >= 1000 && rank == 0) {
+        fprintf(stderr, "workers_per_rank must be < 1000\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
     // 強制檢查 MPI 執行緒安全等級
     if (provided < MPI_THREAD_MULTIPLE) {
@@ -145,24 +122,18 @@ int main(int argc, char *argv[]){
     }
 
     // detect number of CPU cores available on this node
-    int NCPU = (int) sysconf(_SC_NPROCESSORS_ONLN);
-    // if (NCPU > 0) NCPU /= size; 
-    if (NCPU > 0) NCPU = 30; 
-    if (NCPU <= 0) NCPU = omp_get_num_procs() / size;
-    if (NCPU <= 0) NCPU = 1;
+    int max_cpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (max_cpu <= 0) max_cpu = omp_get_num_procs();
+    if (max_cpu <= 0) max_cpu = 1;
+
+    // 保護：不要超過節點實際 CPU
+    int NCPU = min(workers_per_rank, max_cpu);
 
     // compute how many local worker threads this rank will have
-    int local_workers = 0;
-    if (rank == 0) {
-        // 【關鍵修改】：Rank 0 專職 Master，不產生 Worker
-        local_workers = 0;
-    } else {
-        // 其他 Rank 的所有 NCPU 都作為 Worker
-        local_workers = NCPU;
-    }
+    int local_workers = (rank == 0) ? 0 : NCPU;
+    int n_worker = 0;
 
     // compute total number of workers across all ranks
-    int n_worker = 0;
     MPI_Allreduce(&local_workers, &n_worker, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
     if (rank == 0) {

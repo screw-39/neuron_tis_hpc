@@ -1,24 +1,11 @@
-import os
-import sys
-import shutil
-import time
-import pandas as pd
 import numpy as np
 import neuron
 import LFPy
-import sqlite3
+import plotly.graph_objects as go
+import pandas as pd
 
 neuron.h.nrn_load_dll("./model/mods/libnrnmech.so") # load NEURON mechanisms
 neuron.h.celsius = 6.3 # set temperature
-
-def load_test_parameter(worker_id, job_id):
-    conn = sqlite3.connect(f'./DB/waychia_worker_{worker_id}.db')
-    df = pd.read_sql_query(
-        f"SELECT * FROM TEST_PARAMETER WHERE TEST_ID = {job_id}",
-        conn
-    )
-    conn.close()
-    return df
 
 def instantiate_cell(cellParameters):
     cell = LFPy.Cell(**cellParameters, delete_sections=True)
@@ -65,10 +52,6 @@ def generate_3d_r_matrix(theta, ro, roll):
     # 這裡是 Rz(ro) * Ry(theta) * Rx(roll) 的組合
     # 這種寫法保證了不管怎麼轉，三個軸永遠垂直
     # 預先計算三角函數
-    theta = float(theta.iloc[0])
-    ro    = float(ro.iloc[0])
-    roll  = float(roll.iloc[0])
-
     c_r, s_r = np.cos(ro), np.sin(ro)
     c_t, s_t = np.cos(theta), np.sin(theta)
     c_l, s_l = np.cos(roll), np.sin(roll)
@@ -93,27 +76,13 @@ def generate_electrodes_coord(R):
     [-R, 0, 0],  # P1 原始點
     [0, R, 0],   # P2 原始點
     [0, -R, 0],  # P3 原始點
-    [0, 0, R],  # P4 原始點
-    [0, 0, -R],   # P5 原始點
+    [0, 0, R],   # P4 原始點
+    [0, 0, -R],  # P5 原始點
     ])
     return p_init
 
-def safe_execute(cursor, query, params=(), retries=10, wait=0.1):
-    for i in range(retries):
-        try:
-            cursor.execute(query, params)
-            return True
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower():
-                time.sleep(wait)
-            else:
-                raise
-    print("ERROR: database locked too long, giving up")
-    return False
-
-def main(worker_id, job_id):
+def main(j, k, l):
     # ---------- Simulation parameters ----------
-    print(f'JOB ID: {job_id}')
     cellParameters = {
         'morphology' : './model/wc_ball_and_stick.hoc',
         'tstart' : -10, # ignore startup transients
@@ -123,19 +92,14 @@ def main(worker_id, job_id):
         'passive' : False,
     }
 
-    if not os.path.isfile(f'./DB/waychia_worker_{worker_id}.db'):
-        shutil.copyfile(f'./DB/WAYCHIA_SYMMETRY.db', f'./DB/waychia_worker_{worker_id}.db')
-
-    testParameters = load_test_parameter(worker_id, job_id)
-
     # class RecExtElectrode parameters:
     # 1. 定義這三個角度 (由您的模擬環境提供)
     # theta  : y軸
     # ro     : z軸
     # roll   : x軸
-    theta = np.deg2rad(testParameters['THETA']) 
-    ro = np.deg2rad(testParameters['RO'])
-    roll = np.deg2rad(testParameters['ROLL'])
+    theta = np.deg2rad(j) 
+    ro = np.deg2rad(k)
+    roll = np.deg2rad(l)
     R = 100
 
     # 2. 定義旋轉矩陣
@@ -173,18 +137,20 @@ def main(worker_id, job_id):
     t_start = 10   # (ms)
     t_stop = cell.tstop
     dt = cell.dt
-
-    amp = testParameters['AMPLITUDE'].iloc[0] # 振幅 (nA)
-    frequency = testParameters['FREQUENCY'].iloc[0]
-    delta = testParameters['DELTA'].iloc[0]
-    num = testParameters['ELECTRODE_NUM'].iloc[0]
+    amp = 3780500
+    #spike happened with 6 electrodes (R = 100, D = 23)(nA / 0.001 uA): 38.55*1e4
+    #spike happened with 6 electrodes (R = 100, D = 20)(nA / 0.001 uA): 41.44*1e4
+    #spike happened with 4 electrodes (R = 100, D = 20)(nA / 0.001 uA): 189.03*1e4
+    #spike happened with 2 electrodes (R = 100, D = 20)(nA / 0.001 uA): 378.05*1e4
+    frequency = 1000
+    delta = 20
     stim_elec_params = {
-        0:  {"amp": amp if num >= 2 else 0, "freq": frequency + delta, "phase": np.pi }, #+x
-        1:  {"amp": amp if num >= 2 else 0, "freq": frequency, "phase": np.pi },         #-x
-        2:  {"amp": amp if num >= 4 else 0, "freq": frequency + delta, "phase": np.pi }, 
-        3:  {"amp": amp if num >= 4 else 0, "freq": frequency, "phase": np.pi }, 
-        4:  {"amp": amp if num == 6 else 0, "freq": frequency + delta, "phase": np.pi }, 
-        5:  {"amp": amp if num == 6 else 0, "freq": frequency, "phase": np.pi }, 
+        0:  {"amp": amp, "freq": frequency + delta, "phase": np.pi }, #+x
+        1:  {"amp": amp, "freq": frequency, "phase": np.pi },         #-x
+        2:  {"amp": 0, "freq": frequency + delta, "phase": np.pi }, 
+        3:  {"amp": 0, "freq": frequency, "phase": np.pi }, 
+        4:  {"amp": 0, "freq": frequency + delta, "phase": np.pi }, 
+        5:  {"amp": 0, "freq": frequency, "phase": np.pi }, 
     }
 
     # ---- 對每個 cell 套用外加刺激（每次皆使用「新的」probe，避免快取形狀衝突）----
@@ -204,46 +170,60 @@ def main(worker_id, job_id):
         rec_vmem=True
     )
 
-    conn = sqlite3.connect(f'./DB/waychia_worker_{worker_id}.db')
-    c = conn.cursor()
+    t = []
+    voltage = []
+    for i, v in enumerate(cell.somav):
+        t.append(i)
+        voltage.append(v)
+    df = pd.DataFrame({'TIME':t, 'VOLTAGE':voltage})
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df["TIME"],
+        y=df["VOLTAGE"],
+        mode="lines",
+    ))
+    fig.show()
 
-    # Enable WAL mode
-    c.execute("PRAGMA journal_mode=WAL;")
-    c.execute("PRAGMA busy_timeout=5000;")
-    
-    print("edit ELECTRODE_PARAMETER")
+
+    fig = go.Figure()
     for i in range(6):
-        first = safe_execute(
-            c,
-            "INSERT INTO ELECTRODE_PARAMETER (TEST_ID,ELECTRODE_ID,X,Y,Z) VALUES (?, ?, ?, ?, ?)",
-            (job_id, i, electrodeParameters['x'][i], electrodeParameters['y'][i], electrodeParameters['z'][i])
-            )
+        color = "red" if i%2 == 0 else "blue"  # 高頻=紅色, 低頻=藍色
+        label = f"Electrode {i}"
+        fig.add_trace(go.Scatter3d(
+            x=[x[i]], y=[y[i]], z=[z[i]],
+            mode="markers+text",
+            marker=dict(size=6, color=color),
+            text=[label],
+            textposition="top center",
+            name=label
+        ))
 
-    print("edit TEST_VOLTAGE")
-    #PLot voltage of soma to see if neuron has spike.
-    t = 0
-    for v in cell.somav:
-        second = safe_execute(
-            c,
-            "INSERT INTO TEST_VOLTAGE (TEST_ID,TIME,VOLTAGE) VALUES (?, ?, ?)",
-            (job_id, t, v)
-            )
-        t += dt
-
-    if first and second:
-        conn.commit()
-    conn.close()
+    fig.add_trace(go.Scatter3d(
+    x=[0, 0], y=[0, 0], z=[15, -15],
+    line=dict(
+        color='yellow',
+        width=15
+        )
+    ))
+    fig.add_trace(go.Scatter3d(
+    x=[0, 0], y=[0, 0], z=[-15, -30],
+    line=dict(
+        color='orange',
+        width=3
+        )
+    ))
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title="X", range=[150,-150]),
+            yaxis=dict(title="Y", range=[150,-150]),
+            zaxis=dict(title="Z", range=[150,-150]),
+            aspectmode='cube'
+            ),
+        )
+    fig.show()
 
 if __name__ == "__main__":
-    # main(worker_id = int(sys.argv[1]), job_id = int(sys.argv[2]))
-    t = time.time()
-    print(f'Start: {time.ctime(t)}')
-
-    worker_id = int(sys.argv[1])
-    for i in range(46657):
-        job_id = i + 46657*worker_id
-        main(worker_id, job_id)
-
-    t = time.time()
-    print(f'End: {time.ctime(t)}')
-
+    # theta  : Y軸
+    # ro     : Z軸
+    # roll   : X軸
+    main(0, 0, 0)
